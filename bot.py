@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# universal_downloader_bot.py
-
 import asyncio
 import base64
 import logging
@@ -9,6 +7,8 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
+from flask import Flask
+import threading
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, constants
 from telegram.ext import (
@@ -21,12 +21,15 @@ from telegram.ext import (
 )
 from yt_dlp import YoutubeDL
 
+# Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GB
 COOKIES_FILE = "cookies.txt"
 COOKIES_BASE64 = os.getenv("COOKIES_BASE64") or ""
-
 LINK_STORE: dict[str, str] = {}
+
+# Flask app for health checks
+app = Flask(__name__)
 
 # Logging setup
 logging.basicConfig(
@@ -35,8 +38,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@app.route('/')
+def health_check():
+    return "Video Downloader Bot is Running", 200
+
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 def setup_cookies_file():
-    """Create cookies.txt from base64 environment variable if it doesn't exist."""
+    """Create cookies.txt from base64 environment variable."""
     if COOKIES_BASE64 and not Path(COOKIES_FILE).exists():
         try:
             with open(COOKIES_FILE, "wb") as f:
@@ -45,10 +55,10 @@ def setup_cookies_file():
         except Exception as e:
             logger.error(f"Failed to create cookies.txt: {e}")
     elif not Path(COOKIES_FILE).exists():
-        logger.warning("No cookies.txt file found - some sites may require authentication")
+        logger.warning("No cookies.txt file found")
 
 def get_formats(url: str):
-    """Extract formats using yt-dlp with cookies."""
+    """Extract available formats using yt-dlp."""
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
@@ -58,7 +68,7 @@ def get_formats(url: str):
         return ydl.extract_info(url, download=False)
 
 def download_format(url: str, fmt: str, out_path: Path):
-    """Download selected format using yt-dlp with cookies."""
+    """Download the selected format."""
     out_tpl = str(out_path) + ".%(ext)s"
     ydl_opts = {
         "quiet": True,
@@ -73,13 +83,13 @@ def download_format(url: str, fmt: str, out_path: Path):
     for p in out_path.parent.iterdir():
         if p.stem == out_path.name:
             return p
-    raise FileNotFoundError("Download succeeded but file not found!")
+    raise FileNotFoundError("Downloaded file not found")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *Social Media Video Downloader*\n"
-        "Just send me any public video link (YouTube, TikTok, Insta, …).\n"
-        "I'll list every available resolution – pick one and I'll send it!",
+        "👋 *Video Downloader Bot*\n"
+        "Send me a video link (YouTube, TikTok, Instagram, etc.)\n"
+        "I'll show available resolutions and download your choice!",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
 
@@ -88,15 +98,15 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = message.text.strip()
 
     if not url.lower().startswith(("http://", "https://")):
-        await message.reply_text("❌ Please send a direct video URL.")
+        await message.reply_text("❌ Please send a valid URL starting with http:// or https://")
         return
 
-    msg = await message.reply_text("🔍 Extracting formats, please wait…")
+    msg = await message.reply_text("🔍 Analyzing video...")
 
     try:
         info = await asyncio.to_thread(get_formats, url)
     except Exception as e:
-        await msg.edit_text(f"❌ Extraction failed:\n`{e}`", parse_mode="Markdown")
+        await msg.edit_text(f"❌ Error: `{e}`", parse_mode="Markdown")
         return
 
     video_title = info.get("title") or "video"
@@ -122,12 +132,12 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(text=label, callback_data=cb_data)])
 
     if not buttons:
-        await msg.edit_text("❌ No downloadable video formats found.")
+        await msg.edit_text("❌ No downloadable formats found")
         return
 
     keyboard = InlineKeyboardMarkup(buttons)
     await msg.edit_text(
-        f"*{video_title}*\nSelect a resolution:",
+        f"*{video_title}*\nSelect resolution:",
         parse_mode=constants.ParseMode.MARKDOWN,
         reply_markup=keyboard,
     )
@@ -140,29 +150,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         token, fmt_id = query.data.split(":")
         url = LINK_STORE.pop(token)
     except Exception:
-        await query.edit_message_text("⚠️ This button is no longer valid. Send the link again.")
+        await query.edit_message_text("⚠️ Expired. Send the link again.")
         return
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="yt_"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="dl_"))
     temp_base = temp_dir / "video"
 
-    await query.edit_message_text("⬇️ Downloading your video…")
+    await query.edit_message_text("⬇️ Downloading...")
 
     try:
         file_path = await asyncio.to_thread(download_format, url, fmt_id, temp_base)
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text(f"❌ Download error:\n`{e}`", parse_mode="Markdown")
+        await query.edit_message_text(f"❌ Download failed: `{e}`", parse_mode="Markdown")
         return
 
     if file_path.stat().st_size > TELEGRAM_FILE_LIMIT:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text(
-            "⚠️ This file is larger than Telegram's 2 GB limit. Try a lower resolution."
-        )
+        await query.edit_message_text("⚠️ File exceeds 2GB limit. Try lower resolution.")
         return
 
-    await query.edit_message_text("📤 Uploading…")
+    await query.edit_message_text("📤 Uploading to Telegram...")
     try:
         await query.message.reply_video(video=file_path.open("rb"))
     finally:
@@ -170,19 +178,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.delete_message()
 
 def main():
-    if not BOT_TOKEN or BOT_TOKEN.startswith("PASTE_"):
-        raise SystemExit("❌ BOT_TOKEN is not set!")
+    if not BOT_TOKEN:
+        raise SystemExit("❌ BOT_TOKEN environment variable missing!")
 
-    # Setup cookies file at startup
     setup_cookies_file()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    # Start Flask server in background
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 
-    logger.info("Bot started…")
-    app.run_polling()
+    # Start Telegram bot
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
+    bot_app.add_handler(CallbackQueryHandler(button_handler))
+
+    logger.info("Bot starting...")
+    bot_app.run_polling()
 
 if __name__ == "__main__":
     main()
