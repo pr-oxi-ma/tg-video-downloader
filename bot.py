@@ -2,6 +2,7 @@
 # universal_downloader_bot.py
 
 import asyncio
+import base64
 import logging
 import os
 import shutil
@@ -22,6 +23,7 @@ from yt_dlp import YoutubeDL
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GB
+COOKIES_FILE = "cookies.txt"
 
 LINK_STORE: dict[str, str] = {}
 
@@ -32,19 +34,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def ensure_cookies_file():
+    """Create cookies.txt from environment variable if it doesn't exist."""
+    if os.path.exists(COOKIES_FILE):
+        return
+    
+    cookies_content = os.getenv("COOKIES_TXT_CONTENT")
+    if not cookies_content:
+        logger.warning("No cookies.txt or COOKIES_TXT_CONTENT env var found. Proceeding without cookies.")
+        return
+    
+    try:
+        # Decode if base64-encoded
+        decoded = base64.b64decode(cookies_content).decode("utf-8")
+        with open(COOKIES_FILE, "w") as f:
+            f.write(decoded)
+        logger.info("Created cookies.txt from environment variable.")
+    except Exception as e:
+        logger.error(f"Failed to create cookies.txt: {e}")
+
+# Initialize cookies.txt at startup
+ensure_cookies_file()
 
 def get_formats(url: str):
-    """Extract formats using yt-dlp."""
+    """Extract formats using yt-dlp with cookies (if available)."""
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
     }
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts["cookiefile"] = COOKIES_FILE
+    
     with YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
-
 def download_format(url: str, fmt: str, out_path: Path):
-    """Download selected format using yt-dlp."""
+    """Download selected format using yt-dlp with cookies (if available)."""
     out_tpl = str(out_path) + ".%(ext)s"
     ydl_opts = {
         "quiet": True,
@@ -52,6 +77,9 @@ def download_format(url: str, fmt: str, out_path: Path):
         "format": f"{fmt}+bestaudio/best",
         "merge_output_format": "mp4",
     }
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts["cookiefile"] = COOKIES_FILE
+    
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -60,15 +88,13 @@ def download_format(url: str, fmt: str, out_path: Path):
             return p
     raise FileNotFoundError("Download succeeded but file not found!")
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Social Media Video Downloader*\n"
         "Just send me any public video link (YouTube, TikTok, Insta, …).\n"
-        "I'll list every available resolution – pick one and I'll send it!",
+        "I'll list every available resolution – pick one and I’ll send it!",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
-
 
 async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -119,7 +145,6 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard,
     )
 
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -157,7 +182,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shutil.rmtree(temp_dir, ignore_errors=True)
         await query.delete_message()
 
-
 def main():
     if not BOT_TOKEN or BOT_TOKEN.startswith("PASTE_"):
         raise SystemExit("❌ BOT_TOKEN is not set!")
@@ -169,7 +193,6 @@ def main():
 
     logger.info("Bot started…")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
