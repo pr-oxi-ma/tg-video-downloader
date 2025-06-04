@@ -24,7 +24,7 @@ from yt_dlp import YoutubeDL
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GB
-COOKIES_FILE = "cookies.txt"
+COOKIES_FILE = "/tmp/cookies.txt"  # Changed to /tmp for better compatibility
 COOKIES_BASE64 = os.getenv("COOKIES_BASE64") or ""
 LINK_STORE: dict[str, str] = {}
 
@@ -47,15 +47,16 @@ def run_flask():
 
 def setup_cookies_file():
     """Create cookies.txt from base64 environment variable."""
-    if COOKIES_BASE64 and not Path(COOKIES_FILE).exists():
-        try:
+    try:
+        if COOKIES_BASE64:
+            Path(COOKIES_FILE).parent.mkdir(parents=True, exist_ok=True)
             with open(COOKIES_FILE, "wb") as f:
                 f.write(base64.b64decode(COOKIES_BASE64))
-            logger.info("Created cookies.txt from environment variable")
-        except Exception as e:
-            logger.error(f"Failed to create cookies.txt: {e}")
-    elif not Path(COOKIES_FILE).exists():
-        logger.warning("No cookies.txt file found")
+            logger.info(f"Created cookies file at {COOKIES_FILE}")
+        elif not Path(COOKIES_FILE).exists():
+            logger.warning("No cookies.txt file found and COOKIES_BASE64 not provided")
+    except Exception as e:
+        logger.error(f"Failed to setup cookies: {str(e)}")
 
 def get_formats(url: str):
     """Extract available formats using yt-dlp."""
@@ -64,8 +65,12 @@ def get_formats(url: str):
         "skip_download": True,
         "cookiefile": COOKIES_FILE if Path(COOKIES_FILE).exists() else None,
     }
-    with YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except Exception as e:
+        logger.error(f"Error getting formats: {str(e)}")
+        raise
 
 def download_format(url: str, fmt: str, out_path: Path):
     """Download the selected format."""
@@ -77,13 +82,17 @@ def download_format(url: str, fmt: str, out_path: Path):
         "merge_output_format": "mp4",
         "cookiefile": COOKIES_FILE if Path(COOKIES_FILE).exists() else None,
     }
-    with YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-    for p in out_path.parent.iterdir():
-        if p.stem == out_path.name:
-            return p
-    raise FileNotFoundError("Downloaded file not found")
+        for p in out_path.parent.iterdir():
+            if p.stem == out_path.name:
+                return p
+        raise FileNotFoundError("Downloaded file not found")
+    except Exception as e:
+        logger.error(f"Download failed: {str(e)}")
+        raise
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -106,7 +115,7 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.to_thread(get_formats, url)
     except Exception as e:
-        await msg.edit_text(f"❌ Error: `{e}`", parse_mode="Markdown")
+        await msg.edit_text(f"❌ Error: `{str(e)}`", parse_mode="Markdown")
         return
 
     video_title = info.get("title") or "video"
@@ -162,7 +171,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = await asyncio.to_thread(download_format, url, fmt_id, temp_base)
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text(f"❌ Download failed: `{e}`", parse_mode="Markdown")
+        await query.edit_message_text(f"❌ Download failed: `{str(e)}`", parse_mode="Markdown")
         return
 
     if file_path.stat().st_size > TELEGRAM_FILE_LIMIT:
@@ -173,6 +182,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("📤 Uploading to Telegram...")
     try:
         await query.message.reply_video(video=file_path.open("rb"))
+    except Exception as e:
+        await query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
         await query.delete_message()
