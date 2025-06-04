@@ -4,11 +4,12 @@ import time
 
 WEB_URL = os.getenv("RENDER_EXTERNAL_URL")
 PING_INTERVAL = 300  # 5 minutes
+HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
 def ping_server():
     try:
         if WEB_URL:
-            response = requests.get(WEB_URL, timeout=10)
+            response = requests.get(WEB_URL, headers=HEADERS, timeout=10)
             if response.status_code == 200:
                 print("Keepalive ping successful")
                 return True
