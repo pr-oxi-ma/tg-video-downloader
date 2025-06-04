@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import asyncio
-import base64
 import logging
 import os
 import shutil
@@ -24,8 +23,8 @@ from yt_dlp import YoutubeDL
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GB
-COOKIES_FILE = os.path.join(os.getcwd(), "cookies.txt")  # Store in current working directory
-COOKIES_CONTENT = os.getenv("COOKIES_CONTENT") or ""  # Raw cookies.txt content
+COOKIES_FILE = os.path.join(os.getcwd(), "cookies.txt")  # Persistent storage in Render
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]  # Your Telegram user ID
 LINK_STORE: dict[str, str] = {}
 
 # Flask app for health checks
@@ -45,24 +44,16 @@ def health_check():
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-def setup_cookies_file():
-    """Create cookies.txt from environment variable content."""
-    try:
-        if COOKIES_CONTENT:
-            with open(COOKIES_FILE, "w") as f:
-                f.write(COOKIES_CONTENT)
-            logger.info(f"Created cookies file at {COOKIES_FILE}")
-        elif not Path(COOKIES_FILE).exists():
-            logger.warning("No cookies.txt file found and COOKIES_CONTENT not provided")
-    except Exception as e:
-        logger.error(f"Failed to setup cookies: {str(e)}")
+def has_cookies() -> bool:
+    """Check if cookies file exists and is not empty"""
+    return Path(COOKIES_FILE).exists() and os.path.getsize(COOKIES_FILE) > 0
 
 def get_formats(url: str):
     """Extract available formats using yt-dlp."""
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-        "cookiefile": COOKIES_FILE if Path(COOKIES_FILE).exists() else None,
+        "cookiefile": COOKIES_FILE if has_cookies() else None,
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -79,7 +70,7 @@ def download_format(url: str, fmt: str, out_path: Path):
         "outtmpl": out_tpl,
         "format": f"{fmt}+bestaudio/best",
         "merge_output_format": "mp4",
-        "cookiefile": COOKIES_FILE if Path(COOKIES_FILE).exists() else None,
+        "cookiefile": COOKIES_FILE if has_cookies() else None,
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -98,9 +89,80 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Video Downloader Bot*\n"
         "Send me a video link (YouTube, TikTok, Instagram, etc.)\n"
         "I'll show available resolutions and download your choice!\n\n"
-        f"Cookies status: {'✅ Enabled' if Path(COOKIES_FILE).exists() else '❌ Disabled'}",
+        f"Cookies status: {'✅ Enabled' if has_cookies() else '❌ Disabled'}",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
+
+async def upload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /uploadcookies command (admin only)"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ This command is only available for bot admins")
+        return
+
+    await update.message.reply_text(
+        "📁 Please upload your cookies.txt file. "
+        "This will be used for all YouTube downloads.\n\n"
+        "*Note:* This will replace any existing cookies file.",
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+
+async def remove_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /removecookies command (admin only)"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ This command is only available for bot admins")
+        return
+
+    if has_cookies():
+        try:
+            os.remove(COOKIES_FILE)
+            await update.message.reply_text("✅ Cookies file has been removed")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error removing cookies: {str(e)}")
+    else:
+        await update.message.reply_text("ℹ️ No cookies file exists to remove")
+
+async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /cookiesstatus command"""
+    status_text = "🔍 *Cookies Status*\n\n"
+    if has_cookies():
+        status_text += "✅ Cookies are enabled\n"
+        status_text += f"📄 File: {COOKIES_FILE}\n"
+        status_text += f"📏 Size: {os.path.getsize(COOKIES_FILE)} bytes\n"
+    else:
+        status_text += "❌ Cookies are disabled\n"
+    
+    status_text += "\nFor YouTube, cookies are recommended for age-restricted or private content."
+    
+    await update.message.reply_text(
+        status_text,
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+
+async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle when a document is sent (for cookies.txt)"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Only bot admins can upload cookies")
+        return
+
+    message = update.effective_message
+    document = message.document
+
+    if not document.file_name.lower() == "cookies.txt":
+        await message.reply_text("❌ Please upload a file named 'cookies.txt'")
+        return
+
+    try:
+        # Download the file directly to the persistent location
+        file = await document.get_file()
+        await file.download_to_drive(COOKIES_FILE)
+        await message.reply_text(
+            "✅ Cookies file saved! It will be used for all YouTube downloads."
+        )
+    except Exception as e:
+        await message.reply_text(f"❌ Error saving cookies: {str(e)}")
 
 async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -112,7 +174,7 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Check if we're using cookies (for YouTube)
     cookies_note = ""
-    if "youtube.com" in url.lower() and Path(COOKIES_FILE).exists():
+    if "youtube.com" in url.lower() and has_cookies():
         cookies_note = "\n\nℹ️ Using cookies for YouTube access"
 
     msg = await message.reply_text(f"🔍 Analyzing video...{cookies_note}")
@@ -196,8 +258,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ BOT_TOKEN environment variable missing!")
-
-    setup_cookies_file()
+    if not ADMIN_IDS:
+        raise SystemExit("❌ ADMIN_IDS environment variable missing! Set your Telegram user ID")
 
     # Start Flask server in background
     flask_thread = threading.Thread(target=run_flask)
@@ -206,8 +268,18 @@ def main():
 
     # Start Telegram bot
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Command handlers
     bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("uploadcookies", upload_cookies))
+    bot_app.add_handler(CommandHandler("removecookies", remove_cookies))
+    bot_app.add_handler(CommandHandler("cookiesstatus", cookies_status))
+    
+    # Message handlers
+    bot_app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
+    
+    # Callback handler
     bot_app.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Bot starting...")
