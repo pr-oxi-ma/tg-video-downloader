@@ -303,7 +303,7 @@ def main():
     
     # Command handlers
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("admin", admin_help))  # This was missing
+    bot_app.add_handler(CommandHandler("admin", admin_help))  # Now properly indented
     bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
     bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
     bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
