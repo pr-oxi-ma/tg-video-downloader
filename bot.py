@@ -28,23 +28,28 @@ COOKIES_FILE = os.path.join(os.getcwd(), "cookies.txt")  # Persistent storage in
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]  # Your Telegram user ID
 LINK_STORE: dict[str, str] = {}
 
-# Funny responses for non-admins
+# Funny responses with emojis for non-admins
 FUNNY_RESPONSES = [
-    "Sorry, I only speak to the manager.",
-    "Beep boop... command not found in my database.",
-    "I would tell you, but then I'd have to... never mind.",
-    "Nice try! But this command is in a secret language.",
-    "I'm just a simple bot. I don't understand fancy words.",
-    "Error 418: I'm a teapot, not an admin tool.",
-    "That sounded important! Maybe try saying it louder?",
-    "My circuits indicate you're not cleared for that.",
-    "I'd help you, but my lawyer advised against it.",
-    "That command is protected by guard llamas.",
-    "You need the secret handshake for that one.",
-    "I'm programmed to respond only to video links right now.",
-    "Did you say something? I wasn't listening.",
-    "That command requires admin privileges... and a magic wand.",
-    "I could tell you, but then I'd have to erase your memory."
+    "🤖 *BEEP BOOP* Sorry, I only take orders from my creators!",
+    "🦸‍♂️ Nice try! But you're not one of the chosen ones!",
+    "👀 Oops! Did you say something? I wasn't listening...",
+    "🔒 *ACCESS DENIED* This command is for VIPs only!",
+    "🧙‍♂️ Abracadabra! Poof! This command disappeared!",
+    "🤫 Shhh... this is a secret command for special agents!",
+    "🛑 Hold up! You need the magic password for this one!",
+    "👾 Error 404: Admin privileges not found!",
+    "🕵️‍♂️ This command is classified top secret!",
+    "🎩 My circuits detect you're not wearing an admin hat!",
+    "🚨 Alert! Unauthorized command attempt detected!",
+    "🧐 Interesting... but no, just no.",
+    "🤐 My lips are sealed about admin commands!",
+    "💂‍♂️ The guards won't let you pass this point!",
+    "🦹‍♂️ Villains can't use admin commands!",
+    "🧌 This bridge is only for admin trolls!",
+    "👽 This command is from another admin-only galaxy!",
+    "🏰 The castle gates are closed for non-admins!",
+    "🗝️ You need a golden key for this command!",
+    "🤷‍♂️ I'd tell you, but then I'd have to... nope!"
 ]
 
 # Flask app for health checks
@@ -121,28 +126,30 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/upload_cookies - Upload cookies.txt file\n"
             "/remove_cookies - Remove existing cookies\n"
             "/cookies_status - Check cookies status\n\n"
-            "Note: These commands are only available to admins"
+            "🔒 These commands are only available to admins"
         )
         await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
     else:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
 
 async def upload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle cookies upload (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     await update.message.reply_text(
-        "Please upload your cookies.txt file for YouTube authentication."
+        "📁 Please upload your cookies.txt file for YouTube authentication.\n"
+        "This will be used for age-restricted or private content.",
+        parse_mode=constants.ParseMode.MARKDOWN
     )
 
 async def remove_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle cookies removal (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     if has_cookies():
@@ -158,12 +165,13 @@ async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle cookies status check (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     if has_cookies():
         await update.message.reply_text(
-            f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes"
+            f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes",
+            parse_mode=constants.ParseMode.MARKDOWN
         )
     else:
         await update.message.reply_text("❌ Cookies are disabled")
@@ -178,14 +186,18 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = message.document
 
     if not document.file_name.lower() == "cookies.txt":
-        await message.reply_text("Please upload a file named 'cookies.txt'")
+        await message.reply_text("⚠️ Please upload a file named 'cookies.txt'")
         return
 
     try:
         # Download the file directly to the persistent location
         file = await document.get_file()
         await file.download_to_drive(COOKIES_FILE)
-        await message.reply_text("✅ Cookies file saved successfully!")
+        await message.reply_text(
+            "✅ Cookies file saved successfully!\n"
+            "It will be used for all YouTube downloads.",
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
     except Exception as e:
         await message.reply_text(f"❌ Error saving cookies: {str(e)}")
 
@@ -233,7 +245,7 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup(buttons)
     await msg.edit_text(
-        f"*{video_title}*\nSelect resolution:",
+        f"🎬 *{video_title}*\nSelect resolution:",
         parse_mode=constants.ParseMode.MARKDOWN,
         reply_markup=keyboard,
     )
