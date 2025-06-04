@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Updated with secure cookie handling
+# universal_downloader_bot.py
 
 import asyncio
 import base64
@@ -21,11 +21,10 @@ from telegram.ext import (
 )
 from yt_dlp import YoutubeDL
 
-# Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GB
 COOKIES_FILE = "cookies.txt"
-COOKIES_ENV_VAR = "COOKIES_TXT_BASE64"  # Render environment variable name
+COOKIES_BASE64 = os.getenv("COOKIES_BASE64") or ""
 
 LINK_STORE: dict[str, str] = {}
 
@@ -36,93 +35,153 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def init_cookies():
-    """Initialize cookies.txt from environment variable"""
-    if os.path.exists(COOKIES_FILE):
-        logger.info("Using existing cookies.txt")
-        return True
-        
-    cookies_b64 = os.getenv(COOKIES_ENV_VAR)
-    if not cookies_b64:
-        logger.warning("No cookies provided - some videos may not download")
-        return False
+def setup_cookies_file():
+    """Create cookies.txt from base64 environment variable if it doesn't exist."""
+    if COOKIES_BASE64 and not Path(COOKIES_FILE).exists():
+        try:
+            with open(COOKIES_FILE, "wb") as f:
+                f.write(base64.b64decode(COOKIES_BASE64))
+            logger.info("Created cookies.txt from environment variable")
+        except Exception as e:
+            logger.error(f"Failed to create cookies.txt: {e}")
+    elif not Path(COOKIES_FILE).exists():
+        logger.warning("No cookies.txt file found - some sites may require authentication")
 
-    try:
-        cookies_data = base64.b64decode(cookies_b64).decode('utf-8')
-        with open(COOKIES_FILE, 'w') as f:
-            f.write(cookies_data)
-        logger.info("Created cookies.txt from environment variable")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to create cookies.txt: {str(e)}")
-        return False
-
-# Initialize cookies at startup
-COOKIES_AVAILABLE = init_cookies()
-
-def get_ydl_opts():
-    """Generate yt-dlp options with cookies if available"""
-    opts = {
+def get_formats(url: str):
+    """Extract formats using yt-dlp with cookies."""
+    ydl_opts = {
         "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
+        "skip_download": True,
+        "cookiefile": COOKIES_FILE if Path(COOKIES_FILE).exists() else None,
     }
-    if COOKIES_AVAILABLE:
-        opts.update({
-            "cookiefile": COOKIES_FILE,
-            "mark_watched": False,
-            "geo_bypass": True,
-        })
-    return opts
+    with YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
 
-async def get_formats(url: str):
-    """Get available formats with cookie support"""
-    ydl_opts = get_ydl_opts()
-    ydl_opts["skip_download"] = True
-    
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-            return info
-    except Exception as e:
-        logger.error(f"Extraction failed: {str(e)}")
-        raise
-
-async def download_format(url: str, fmt: str, out_path: Path):
-    """Download with cookie support"""
+def download_format(url: str, fmt: str, out_path: Path):
+    """Download selected format using yt-dlp with cookies."""
     out_tpl = str(out_path) + ".%(ext)s"
-    ydl_opts = get_ydl_opts()
-    ydl_opts.update({
+    ydl_opts = {
+        "quiet": True,
         "outtmpl": out_tpl,
         "format": f"{fmt}+bestaudio/best",
         "merge_output_format": "mp4",
-    })
+        "cookiefile": COOKIES_FILE if Path(COOKIES_FILE).exists() else None,
+    }
+    with YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+    for p in out_path.parent.iterdir():
+        if p.stem == out_path.name:
+            return p
+    raise FileNotFoundError("Download succeeded but file not found!")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 *Social Media Video Downloader*\n"
+        "Just send me any public video link (YouTube, TikTok, Insta, …).\n"
+        "I'll list every available resolution – pick one and I'll send it!",
+        parse_mode=constants.ParseMode.MARKDOWN,
+    )
+
+async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    url = message.text.strip()
+
+    if not url.lower().startswith(("http://", "https://")):
+        await message.reply_text("❌ Please send a direct video URL.")
+        return
+
+    msg = await message.reply_text("🔍 Extracting formats, please wait…")
 
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            await asyncio.to_thread(ydl.download, [url])
-        
-        for p in out_path.parent.iterdir():
-            if p.stem == out_path.name:
-                return p
-        raise FileNotFoundError("Downloaded file not found")
+        info = await asyncio.to_thread(get_formats, url)
     except Exception as e:
-        logger.error(f"Download failed: {str(e)}")
-        raise
+        await msg.edit_text(f"❌ Extraction failed:\n`{e}`", parse_mode="Markdown")
+        return
 
-# [Rest of your original handlers (start, link_handler, button_handler) remain unchanged]
-# ...
+    video_title = info.get("title") or "video"
+    formats = info.get("formats") or []
+
+    buttons = []
+    seen_labels = set()
+    for f in sorted(formats, key=lambda x: (x.get("height") or 0), reverse=True):
+        if f.get("vcodec") == "none":
+            continue
+        height = f.get("height") or 0
+        if height == 0:
+            continue
+        label = f"{height}p"
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+
+        fmt_id = f["format_id"]
+        token = uuid.uuid4().hex[:10]
+        LINK_STORE[token] = url
+        cb_data = f"{token}:{fmt_id}"
+        buttons.append([InlineKeyboardButton(text=label, callback_data=cb_data)])
+
+    if not buttons:
+        await msg.edit_text("❌ No downloadable video formats found.")
+        return
+
+    keyboard = InlineKeyboardMarkup(buttons)
+    await msg.edit_text(
+        f"*{video_title}*\nSelect a resolution:",
+        parse_mode=constants.ParseMode.MARKDOWN,
+        reply_markup=keyboard,
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        token, fmt_id = query.data.split(":")
+        url = LINK_STORE.pop(token)
+    except Exception:
+        await query.edit_message_text("⚠️ This button is no longer valid. Send the link again.")
+        return
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="yt_"))
+    temp_base = temp_dir / "video"
+
+    await query.edit_message_text("⬇️ Downloading your video…")
+
+    try:
+        file_path = await asyncio.to_thread(download_format, url, fmt_id, temp_base)
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        await query.edit_message_text(f"❌ Download error:\n`{e}`", parse_mode="Markdown")
+        return
+
+    if file_path.stat().st_size > TELEGRAM_FILE_LIMIT:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        await query.edit_message_text(
+            "⚠️ This file is larger than Telegram's 2 GB limit. Try a lower resolution."
+        )
+        return
+
+    await query.edit_message_text("📤 Uploading…")
+    try:
+        await query.message.reply_video(video=file_path.open("rb"))
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        await query.delete_message()
 
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable not set")
+    if not BOT_TOKEN or BOT_TOKEN.startswith("PASTE_"):
+        raise SystemExit("❌ BOT_TOKEN is not set!")
+
+    # Setup cookies file at startup
+    setup_cookies_file()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("Bot starting with cookie support: %s", COOKIES_AVAILABLE)
+    logger.info("Bot started…")
     app.run_polling()
 
 if __name__ == "__main__":
