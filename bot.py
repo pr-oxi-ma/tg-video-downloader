@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import uuid
+import random
 from pathlib import Path
 from flask import Flask
 import threading
@@ -23,9 +24,28 @@ from yt_dlp import YoutubeDL
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") or ""
 TELEGRAM_FILE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GB
-COOKIES_FILE = os.path.join(os.getcwd(), "cookies.txt")  # Persistent storage
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]  # Bot admin IDs
+COOKIES_FILE = os.path.join(os.getcwd(), "cookies.txt")  # Persistent storage in Render
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]  # Your Telegram user ID
 LINK_STORE: dict[str, str] = {}
+
+# Funny responses for non-admins
+FUNNY_RESPONSES = [
+    "Sorry, I only speak to the manager.",
+    "Beep boop... command not found in my database.",
+    "I would tell you, but then I'd have to... never mind.",
+    "Nice try! But this command is in a secret language.",
+    "I'm just a simple bot. I don't understand fancy words.",
+    "Error 418: I'm a teapot, not an admin tool.",
+    "That sounded important! Maybe try saying it louder?",
+    "My circuits indicate you're not cleared for that.",
+    "I'd help you, but my lawyer advised against it.",
+    "That command is protected by guard llamas.",
+    "You need the secret handshake for that one.",
+    "I'm programmed to respond only to video links right now.",
+    "Did you say something? I wasn't listening.",
+    "That command requires admin privileges... and a magic wand.",
+    "I could tell you, but then I'd have to erase your memory."
+]
 
 # Flask app for health checks
 app = Flask(__name__)
@@ -85,7 +105,6 @@ def download_format(url: str, fmt: str, out_path: Path):
         raise
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command visible to all users"""
     await update.message.reply_text(
         "👋 *Video Downloader Bot*\n"
         "Send me a video link (YouTube, TikTok, Instagram, etc.)\n"
@@ -94,82 +113,88 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only help command"""
+    """Show admin help if user is admin, otherwise show funny response"""
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        return
-    
-    help_text = (
-        "🛠 *Admin Commands*\n\n"
-        "/upload_cookies - Upload cookies.txt file\n"
-        "/remove_cookies - Remove cookies.txt file\n"
-        "/cookies_status - Check cookies status\n\n"
-        f"Current cookies: {'✅ Present' if has_cookies() else '❌ Missing'}"
-    )
-    await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
+    if user_id in ADMIN_IDS:
+        help_text = (
+            "🛠 *Admin Commands*\n\n"
+            "/upload_cookies - Upload cookies.txt file\n"
+            "/remove_cookies - Remove existing cookies\n"
+            "/cookies_status - Check cookies status\n\n"
+            "Note: These commands are only available to admins"
+        )
+        await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
 
 async def upload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hidden command for uploading cookies"""
+    """Handle cookies upload (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
         return
 
     await update.message.reply_text(
-        "Please upload your cookies.txt file (send as document)",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Cancel", callback_data="cancel_upload")]
-        )
+        "Please upload your cookies.txt file for YouTube authentication."
     )
 
 async def remove_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hidden command for removing cookies"""
+    """Handle cookies removal (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
         return
 
     if has_cookies():
         try:
             os.remove(COOKIES_FILE)
-            await update.message.reply_text("✅ Cookies removed")
+            await update.message.reply_text("✅ Cookies file has been removed")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error removing cookies: {str(e)}")
     else:
-        await update.message.reply_text("ℹ️ No cookies file exists")
+        await update.message.reply_text("ℹ️ No cookies file exists to remove")
 
 async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hidden command for checking cookies status"""
+    """Handle cookies status check (admin only)"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES))
+        return
+
+    if has_cookies():
+        await update.message.reply_text(
+            f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes"
+        )
+    else:
+        await update.message.reply_text("❌ Cookies are disabled")
+
+async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle when a document is sent (for cookies.txt)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         return
 
-    status = "✅ Present" if has_cookies() else "❌ Missing"
-    await update.message.reply_text(f"Cookies status: {status}")
+    message = update.effective_message
+    document = message.document
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle document uploads (for cookies)"""
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        return
-
-    document = update.message.document
-    if document.file_name.lower() != "cookies.txt":
+    if not document.file_name.lower() == "cookies.txt":
+        await message.reply_text("Please upload a file named 'cookies.txt'")
         return
 
     try:
-        # Download the file
+        # Download the file directly to the persistent location
         file = await document.get_file()
         await file.download_to_drive(COOKIES_FILE)
-        await update.message.reply_text("✅ Cookies file saved")
+        await message.reply_text("✅ Cookies file saved successfully!")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        await message.reply_text(f"❌ Error saving cookies: {str(e)}")
 
 async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle video links from users"""
     message = update.effective_message
     url = message.text.strip()
 
     if not url.lower().startswith(("http://", "https://")):
-        await message.reply_text("❌ Please send a valid URL")
+        await message.reply_text("❌ Please send a valid URL starting with http:// or https://")
         return
 
     msg = await message.reply_text("🔍 Analyzing video...")
@@ -177,7 +202,7 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = await asyncio.to_thread(get_formats, url)
     except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)}")
+        await msg.edit_text(f"❌ Error: `{str(e)}`", parse_mode="Markdown")
         return
 
     video_title = info.get("title") or "video"
@@ -214,7 +239,6 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle resolution selection"""
     query = update.callback_query
     await query.answer()
 
@@ -234,19 +258,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = await asyncio.to_thread(download_format, url, fmt_id, temp_base)
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text(f"❌ Download failed: {str(e)}")
+        await query.edit_message_text(f"❌ Download failed: `{str(e)}`", parse_mode="Markdown")
         return
 
     if file_path.stat().st_size > TELEGRAM_FILE_LIMIT:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text("⚠️ File too large. Try lower resolution.")
+        await query.edit_message_text("⚠️ File exceeds 2GB limit. Try lower resolution.")
         return
 
-    await query.edit_message_text("📤 Uploading...")
+    await query.edit_message_text("📤 Uploading to Telegram...")
     try:
         await query.message.reply_video(video=file_path.open("rb"))
     except Exception as e:
-        await query.edit_message_text(f"❌ Upload failed: {str(e)}")
+        await query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
         await query.delete_message()
@@ -255,28 +279,32 @@ def main():
     if not BOT_TOKEN:
         raise SystemExit("❌ BOT_TOKEN environment variable missing!")
     if not ADMIN_IDS:
-        raise SystemExit("❌ ADMIN_IDS environment variable missing!")
+        raise SystemExit("❌ ADMIN_IDS environment variable missing! Set your Telegram user ID")
 
     # Start Flask server in background
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Create bot application
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_help))
-    app.add_handler(CommandHandler("upload_cookies", upload_cookies))
-    app.add_handler(CommandHandler("remove_cookies", remove_cookies))
-    app.add_handler(CommandHandler("cookies_status", cookies_status))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    # Start Telegram bot
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Command handlers
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("admin", admin_help))
+    bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
+    bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
+    bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
+    
+    # Message handlers
+    bot_app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
+    
+    # Callback handler
+    bot_app.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Bot starting...")
-    app.run_polling()
+    bot_app.run_polling()
 
 if __name__ == "__main__":
     main()
