@@ -126,10 +126,10 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     help_text = (
         "🛠 *Admin Commands*\n\n"
-        "/upload_cookies - Upload cookies.txt file\n"
-        "/remove_cookies - Remove existing cookies\n"
-        "/cookies_status - Check cookies status\n\n"
-        "🔒 These commands are only available to admins"
+        "*/upload_cookies* - Upload cookies.txt file\n"
+        "*/remove_cookies* - Remove existing cookies\n"
+        "*/cookies_status* - Check cookies status\n\n"
+        "🔒 *These commands are only available to admins*"
     )
     await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
 
@@ -304,7 +304,7 @@ def main():
     
     # Command handlers
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("admin_help", admin_help))
+    bot_app.add_handler(CommandHandler("admin", admin_help))
     bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
     bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
     bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
