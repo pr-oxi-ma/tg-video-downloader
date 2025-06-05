@@ -120,17 +120,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show admin help if user is admin, otherwise show funny response"""
     user_id = update.effective_user.id
-    if user_id in ADMIN_IDS:
-        help_text = (
-            "🛠 *Admin Commands*\n\n"
-            "/upload_cookies - Upload cookies.txt file\n"
-            "/remove_cookies - Remove existing cookies\n"
-            "/cookies_status - Check cookies status\n\n"
-            "🔒 These commands are only available to admins"
-        )
-        await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
-    else:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+
+    help_text = (
+        "🛠 *Admin Commands*\n\n"
+        "/upload_cookies - Upload cookies.txt file\n"
+        "/remove_cookies - Remove existing cookies\n"
+        "/cookies_status - Check cookies status\n\n"
+        "🔒 These commands are only available to admins"
+    )
+    await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
 
 async def upload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle cookies upload (admin only)"""
@@ -303,7 +304,7 @@ def main():
     
     # Command handlers
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("admin", admin_help))  # Now properly indented
+    bot_app.add_handler(CommandHandler("admin_help", admin_help))
     bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
     bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
     bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
