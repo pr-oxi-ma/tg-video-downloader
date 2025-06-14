@@ -7,10 +7,13 @@ services:
     envVars:
       - key: BOT_TOKEN
         value: your_telegram_bot_token_here
+      - key: ADMIN_IDS
+        value: "8145071559"  # Replace with your Telegram user ID
       - key: COOKIES_BASE64
-        value: your_base64_cookies_optional
+        value: your_base64_cookies_optional  # Optional: base64 encoded cookies.txt
       - key: RENDER_EXTERNAL_URL
         fromService:
           name: tg-video-downloader
           type: web
           property: url
+    plan: free  # Or upgrade to paid plan for better performance
