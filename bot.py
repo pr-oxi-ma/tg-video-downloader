@@ -10,14 +10,13 @@ from pathlib import Path
 from flask import Flask
 import threading
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ParseMode
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Updater,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     Filters,
-    CallbackQueryHandler,
-    CallbackContext,
 )
 from yt_dlp import YoutubeDL
 
@@ -109,19 +108,19 @@ def download_format(url: str, fmt: str, out_path: Path):
         logger.error(f"Download failed: {str(e)}")
         raise
 
-def start(update: Update, context: CallbackContext):
+def start(update: Update, context):
     update.message.reply_text(
         "👋 *Video Downloader Bot*\n"
         "Send me a video link (YouTube, TikTok, Instagram, etc.)\n"
         "I'll show available resolutions and download your choice!",
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode="Markdown",
     )
 
-def admin_help(update: Update, context: CallbackContext):
+def admin_help(update: Update, context):
     """Show admin help if user is admin, otherwise show funny response"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode="Markdown")
         return
 
     help_text = (
@@ -131,26 +130,26 @@ def admin_help(update: Update, context: CallbackContext):
         "*/cookies_status* - Check cookies status\n\n"
         "🔒 *These commands are only available to admins*"
     )
-    update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(help_text, parse_mode="Markdown")
 
-def upload_cookies(update: Update, context: CallbackContext):
+def upload_cookies(update: Update, context):
     """Handle cookies upload (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode="Markdown")
         return
 
     update.message.reply_text(
         "📁 Please upload your cookies.txt file for YouTube authentication.\n"
         "This will be used for age-restricted or private content.",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode="Markdown"
     )
 
-def remove_cookies(update: Update, context: CallbackContext):
+def remove_cookies(update: Update, context):
     """Handle cookies removal (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode="Markdown")
         return
 
     if has_cookies():
@@ -162,22 +161,22 @@ def remove_cookies(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("ℹ️ No cookies file exists to remove")
 
-def cookies_status(update: Update, context: CallbackContext):
+def cookies_status(update: Update, context):
     """Handle cookies status check (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode="Markdown")
         return
 
     if has_cookies():
         update.message.reply_text(
             f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
     else:
         update.message.reply_text("❌ Cookies are disabled")
 
-def document_handler(update: Update, context: CallbackContext):
+def document_handler(update: Update, context):
     """Handle when a document is sent (for cookies.txt)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -197,12 +196,12 @@ def document_handler(update: Update, context: CallbackContext):
         message.reply_text(
             "✅ Cookies file saved successfully!\n"
             "It will be used for all YouTube downloads.",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode="Markdown"
         )
     except Exception as e:
         message.reply_text(f"❌ Error saving cookies: {str(e)}")
 
-def link_handler(update: Update, context: CallbackContext):
+def link_handler(update: Update, context):
     message = update.effective_message
     url = message.text.strip()
 
@@ -247,11 +246,11 @@ def link_handler(update: Update, context: CallbackContext):
     keyboard = InlineKeyboardMarkup(buttons)
     msg.edit_text(
         f"🎬 *{video_title}*\nSelect resolution:",
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode="Markdown",
         reply_markup=keyboard,
     )
 
-def button_handler(update: Update, context: CallbackContext):
+def button_handler(update: Update, context):
     query = update.callback_query
     query.answer()
 
@@ -281,15 +280,12 @@ def button_handler(update: Update, context: CallbackContext):
 
     query.edit_message_text("📤 Uploading to Telegram...")
     try:
-        query.message.reply_video(video=open(file_path, "rb"))
+        context.bot.send_video(chat_id=query.message.chat_id, video=open(file_path, "rb"))
     except Exception as e:
         query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
         query.delete_message()
-
-def error_handler(update: Update, context: CallbackContext):
-    logger.error(f"Update {update} caused error {context.error}")
 
 def main():
     if not BOT_TOKEN:
@@ -319,9 +315,6 @@ def main():
     
     # Callback handler
     dp.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Error handler
-    dp.add_error_handler(error_handler)
 
     logger.info("Bot starting...")
     updater.start_polling()
