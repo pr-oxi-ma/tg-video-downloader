@@ -1,4 +1,4 @@
-python-telegram-bot==20.5
+python-telegram-bot==20.0
 yt-dlp
 Flask==2.3.2
 requests==2.31.0
