@@ -10,14 +10,14 @@ from pathlib import Path
 from flask import Flask
 import threading
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, constants
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ParseMode
 from telegram.ext import (
-    ApplicationBuilder,
-    CallbackQueryHandler,
+    Updater,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
-    filters,
+    Filters,
+    CallbackQueryHandler,
+    CallbackContext,
 )
 from yt_dlp import YoutubeDL
 
@@ -109,19 +109,19 @@ def download_format(url: str, fmt: str, out_path: Path):
         logger.error(f"Download failed: {str(e)}")
         raise
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "👋 *Video Downloader Bot*\n"
         "Send me a video link (YouTube, TikTok, Instagram, etc.)\n"
         "I'll show available resolutions and download your choice!",
-        parse_mode=constants.ParseMode.MARKDOWN,
+        parse_mode=ParseMode.MARKDOWN,
     )
 
-async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def admin_help(update: Update, context: CallbackContext):
     """Show admin help if user is admin, otherwise show funny response"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
         return
 
     help_text = (
@@ -131,53 +131,53 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/cookies_status* - Check cookies status\n\n"
         "🔒 *These commands are only available to admins*"
     )
-    await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
+    update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
-async def upload_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def upload_cookies(update: Update, context: CallbackContext):
     """Handle cookies upload (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
         return
 
-    await update.message.reply_text(
+    update.message.reply_text(
         "📁 Please upload your cookies.txt file for YouTube authentication.\n"
         "This will be used for age-restricted or private content.",
-        parse_mode=constants.ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN
     )
 
-async def remove_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def remove_cookies(update: Update, context: CallbackContext):
     """Handle cookies removal (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
         return
 
     if has_cookies():
         try:
             os.remove(COOKIES_FILE)
-            await update.message.reply_text("✅ Cookies file has been removed")
+            update.message.reply_text("✅ Cookies file has been removed")
         except Exception as e:
-            await update.message.reply_text(f"❌ Error removing cookies: {str(e)}")
+            update.message.reply_text(f"❌ Error removing cookies: {str(e)}")
     else:
-        await update.message.reply_text("ℹ️ No cookies file exists to remove")
+        update.message.reply_text("ℹ️ No cookies file exists to remove")
 
-async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cookies_status(update: Update, context: CallbackContext):
     """Handle cookies status check (admin only)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
+        update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=ParseMode.MARKDOWN)
         return
 
     if has_cookies():
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes",
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN
         )
     else:
-        await update.message.reply_text("❌ Cookies are disabled")
+        update.message.reply_text("❌ Cookies are disabled")
 
-async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def document_handler(update: Update, context: CallbackContext):
     """Handle when a document is sent (for cookies.txt)"""
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
@@ -187,35 +187,35 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = message.document
 
     if not document.file_name.lower() == "cookies.txt":
-        await message.reply_text("⚠️ Please upload a file named 'cookies.txt'")
+        message.reply_text("⚠️ Please upload a file named 'cookies.txt'")
         return
 
     try:
         # Download the file directly to the persistent location
-        file = await document.get_file()
-        await file.download_to_drive(COOKIES_FILE)
-        await message.reply_text(
+        file = document.get_file()
+        file.download(COOKIES_FILE)
+        message.reply_text(
             "✅ Cookies file saved successfully!\n"
             "It will be used for all YouTube downloads.",
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        await message.reply_text(f"❌ Error saving cookies: {str(e)}")
+        message.reply_text(f"❌ Error saving cookies: {str(e)}")
 
-async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def link_handler(update: Update, context: CallbackContext):
     message = update.effective_message
     url = message.text.strip()
 
     if not url.lower().startswith(("http://", "https://")):
-        await message.reply_text("❌ Please send a valid URL starting with http:// or https://")
+        message.reply_text("❌ Please send a valid URL starting with http:// or https://")
         return
 
-    msg = await message.reply_text("🔍 Analyzing video...")
+    msg = message.reply_text("🔍 Analyzing video...")
 
     try:
-        info = await asyncio.to_thread(get_formats, url)
+        info = get_formats(url)
     except Exception as e:
-        await msg.edit_text(f"❌ Error: `{str(e)}`", parse_mode="Markdown")
+        msg.edit_text(f"❌ Error: `{str(e)}`", parse_mode="Markdown")
         return
 
     video_title = info.get("title") or "video"
@@ -241,52 +241,55 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(text=label, callback_data=cb_data)])
 
     if not buttons:
-        await msg.edit_text("❌ No downloadable formats found")
+        msg.edit_text("❌ No downloadable formats found")
         return
 
     keyboard = InlineKeyboardMarkup(buttons)
-    await msg.edit_text(
+    msg.edit_text(
         f"🎬 *{video_title}*\nSelect resolution:",
-        parse_mode=constants.ParseMode.MARKDOWN,
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=keyboard,
     )
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
 
     try:
         token, fmt_id = query.data.split(":")
         url = LINK_STORE.pop(token)
     except Exception:
-        await query.edit_message_text("⚠️ Expired. Send the link again.")
+        query.edit_message_text("⚠️ Expired. Send the link again.")
         return
 
     temp_dir = Path(tempfile.mkdtemp(prefix="dl_"))
     temp_base = temp_dir / "video"
 
-    await query.edit_message_text("⬇️ Downloading...")
+    query.edit_message_text("⬇️ Downloading...")
 
     try:
-        file_path = await asyncio.to_thread(download_format, url, fmt_id, temp_base)
+        file_path = download_format(url, fmt_id, temp_base)
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text(f"❌ Download failed: `{str(e)}`", parse_mode="Markdown")
+        query.edit_message_text(f"❌ Download failed: `{str(e)}`", parse_mode="Markdown")
         return
 
     if file_path.stat().st_size > TELEGRAM_FILE_LIMIT:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.edit_message_text("⚠️ File exceeds 2GB limit. Try lower resolution.")
+        query.edit_message_text("⚠️ File exceeds 2GB limit. Try lower resolution.")
         return
 
-    await query.edit_message_text("📤 Uploading to Telegram...")
+    query.edit_message_text("📤 Uploading to Telegram...")
     try:
-        await query.message.reply_video(video=file_path.open("rb"))
+        query.message.reply_video(video=open(file_path, "rb"))
     except Exception as e:
-        await query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
+        query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.delete_message()
+        query.delete_message()
+
+def error_handler(update: Update, context: CallbackContext):
+    logger.error(f"Update {update} caused error {context.error}")
 
 def main():
     if not BOT_TOKEN:
@@ -300,24 +303,29 @@ def main():
     flask_thread.start()
 
     # Start Telegram bot
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
     
     # Command handlers
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("admin", admin_help))
-    bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
-    bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
-    bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("admin", admin_help))
+    dp.add_handler(CommandHandler("upload_cookies", upload_cookies))
+    dp.add_handler(CommandHandler("remove_cookies", remove_cookies))
+    dp.add_handler(CommandHandler("cookies_status", cookies_status))
     
     # Message handlers
-    bot_app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
+    dp.add_handler(MessageHandler(Filters.document, document_handler))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, link_handler))
     
     # Callback handler
-    bot_app.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Error handler
+    dp.add_error_handler(error_handler)
 
     logger.info("Bot starting...")
-    bot_app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
