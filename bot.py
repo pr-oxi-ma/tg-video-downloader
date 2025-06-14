@@ -9,10 +9,8 @@ import random
 from pathlib import Path
 from flask import Flask
 import threading
-import aiohttp
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, constants
-from telegram.error import Conflict
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -290,47 +288,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shutil.rmtree(temp_dir, ignore_errors=True)
         await query.delete_message()
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors in the telegram bot."""
-    logger.error(f"Update {update} caused error {context.error}")
-    
-    if isinstance(context.error, Conflict):
-        logger.error("Conflict detected - another instance might be running")
-        # Don't try to send message as the bot is in conflict state
-        return
-    
-    try:
-        await context.bot.send_message(
-            chat_id=ADMIN_IDS[0],
-            text=f"Error occurred: {context.error}"
-        )
-    except Exception as e:
-        logger.error(f"Couldn't send error message: {e}")
+def main():
+    if not BOT_TOKEN:
+        raise SystemExit("❌ BOT_TOKEN environment variable missing!")
+    if not ADMIN_IDS:
+        raise SystemExit("❌ ADMIN_IDS environment variable missing! Set your Telegram user ID")
 
-async def keepalive_task():
-    """Periodically ping the web server to keep it alive."""
-    while True:
-        try:
-            if WEB_URL := os.getenv("RENDER_EXTERNAL_URL"):
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(WEB_URL, timeout=10) as response:
-                        if response.status == 200:
-                            logger.info("Keepalive ping successful")
-        except Exception as e:
-            logger.error(f"Keepalive error: {e}")
-        await asyncio.sleep(300)  # 5 minutes
-
-async def main_async():
-    """Main async function to run the bot."""
-    # Start keepalive task
-    asyncio.create_task(keepalive_task())
-    
     # Start Flask server in background
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Build bot application
+    # Start Telegram bot
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
     
     # Command handlers
@@ -346,21 +315,9 @@ async def main_async():
     
     # Callback handler
     bot_app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Error handler
-    bot_app.add_error_handler(error_handler)
 
     logger.info("Bot starting...")
-    await bot_app.run_polling()
-
-def main():
-    if not BOT_TOKEN:
-        raise SystemExit("❌ BOT_TOKEN environment variable missing!")
-    if not ADMIN_IDS:
-        raise SystemExit("❌ ADMIN_IDS environment variable missing! Set your Telegram user ID")
-
-    # Run the async main function
-    asyncio.run(main_async())
+    bot_app.run_polling()
 
 if __name__ == "__main__":
     main()

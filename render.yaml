@@ -3,14 +3,12 @@ services:
     name: tg-video-downloader
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python bot.py & python keepalive.py
     envVars:
       - key: BOT_TOKEN
         value: your_telegram_bot_token_here
       - key: COOKIES_BASE64
         value: your_base64_cookies_optional
-      - key: ADMIN_IDS
-        value: your_admin_user_id
       - key: RENDER_EXTERNAL_URL
         fromService:
           name: tg-video-downloader
