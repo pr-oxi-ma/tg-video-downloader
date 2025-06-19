@@ -81,7 +81,8 @@ def verify_cookies():
     try:
         with open(COOKIES_FILE, 'r') as f:
             content = f.read()
-            return 'youtube.com' in content and '# HTTP Cookie File' in content
+            # More flexible verification
+            return 'youtube.com' in content and content.strip().startswith('#')
     except:
         return False
 
@@ -142,7 +143,8 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 *Admin Commands*\n\n"
         "*/upload_cookies* - Upload cookies.txt file\n"
         "*/remove_cookies* - Remove existing cookies\n"
-        "*/cookies_status* - Check cookies status\n\n"
+        "*/cookies_status* - Check cookies status\n"
+        "*/view_cookies* - View first few lines of cookies (debug)\n\n"
         "🔒 *These commands are only available to admins*"
     )
     await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
@@ -194,6 +196,29 @@ async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Cookies are disabled")
 
+async def view_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View first few lines of cookies (admin only)"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+
+    if not has_cookies():
+        await update.message.reply_text("❌ No cookies file exists")
+        return
+
+    try:
+        with open(COOKIES_FILE, 'r') as f:
+            lines = [f.readline() for _ in range(5)]
+            await update.message.reply_text(
+                "📝 First 5 lines of cookies:\n```\n" + 
+                "".join(lines) + 
+                "\n```",
+                parse_mode=constants.ParseMode.MARKDOWN_V2
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error reading cookies: {str(e)}")
+
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle when a document is sent (for cookies.txt)"""
     user_id = update.effective_user.id
@@ -216,7 +241,8 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Verify the cookies file contains YouTube domain
         with open(temp_cookies, 'r') as f:
             content = f.read()
-            if 'youtube.com' not in content or '# HTTP Cookie File' not in content:
+            # More flexible verification
+            if 'youtube.com' not in content or not content.strip().startswith('#'):
                 raise ValueError("Uploaded cookies.txt doesn't contain valid YouTube cookies")
         
         # If verification passes, move to permanent location
@@ -384,6 +410,7 @@ def main():
     bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
     bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
     bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
+    bot_app.add_handler(CommandHandler("view_cookies", view_cookies))
     
     # Message handlers
     bot_app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
