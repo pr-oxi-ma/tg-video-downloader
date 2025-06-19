@@ -73,6 +73,18 @@ def has_cookies() -> bool:
     """Check if cookies file exists and is not empty"""
     return Path(COOKIES_FILE).exists() and os.path.getsize(COOKIES_FILE) > 0
 
+def verify_cookies():
+    """Verify cookies file contains YouTube domain and hasn't been corrupted"""
+    if not has_cookies():
+        return False
+    
+    try:
+        with open(COOKIES_FILE, 'r') as f:
+            content = f.read()
+            return 'youtube.com' in content and '# HTTP Cookie File' in content
+    except:
+        return False
+
 def get_formats(url: str):
     """Extract available formats using yt-dlp."""
     ydl_opts = {
@@ -96,7 +108,6 @@ def download_format(url: str, fmt: str, out_path: Path):
         "format": f"{fmt}+bestaudio/best",
         "merge_output_format": "mp4",
         "cookiefile": COOKIES_FILE if has_cookies() else None,
-        # Add these options to preserve cookies
         "cookiesfrombrowser": None,  # Disable any automatic cookie handling
         "no_cookies": False,        # Ensure cookies are used if provided
     }
@@ -111,18 +122,6 @@ def download_format(url: str, fmt: str, out_path: Path):
     except Exception as e:
         logger.error(f"Download failed: {str(e)}")
         raise
-        
-def verify_cookies():
-    """Verify cookies file contains YouTube domain and hasn't been corrupted"""
-    if not has_cookies():
-        return False
-    
-    try:
-        with open(COOKIES_FILE, 'r') as f:
-            content = f.read()
-            return 'youtube.com' in content
-    except:
-        return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -185,8 +184,11 @@ async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if has_cookies():
+        status = "✅ Valid" if verify_cookies() else "⚠️ Invalid/Corrupted"
         await update.message.reply_text(
-            f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes",
+            f"{status} cookies are enabled\n"
+            f"📏 Size: {os.path.getsize(COOKIES_FILE)} bytes\n"
+            f"🔍 Contains YouTube cookies: {'yes' if verify_cookies() else 'no'}",
             parse_mode=constants.ParseMode.MARKDOWN
         )
     else:
@@ -214,8 +216,8 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Verify the cookies file contains YouTube domain
         with open(temp_cookies, 'r') as f:
             content = f.read()
-            if 'youtube.com' not in content:
-                raise ValueError("Uploaded cookies.txt doesn't contain YouTube cookies")
+            if 'youtube.com' not in content or '# HTTP Cookie File' not in content:
+                raise ValueError("Uploaded cookies.txt doesn't contain valid YouTube cookies")
         
         # If verification passes, move to permanent location
         shutil.move(temp_cookies, COOKIES_FILE)
@@ -226,7 +228,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await message.reply_text(f"❌ Error saving cookies: {str(e)}")
-        if temp_cookies.exists():
+        if 'temp_cookies' in locals() and temp_cookies.exists():
             temp_cookies.unlink()
 
 async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -361,7 +363,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        await query.delete_message()
 
 def main():
     if not BOT_TOKEN:
