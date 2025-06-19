@@ -3,7 +3,7 @@ services:
     name: tg-video-downloader
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py & python keepalive.py
+    startCommand: gunicorn bot:app & python keepalive.py
     envVars:
       - key: BOT_TOKEN
         value: your_telegram_bot_token_here
