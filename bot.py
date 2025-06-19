@@ -1,264 +1,299 @@
 import os
 import logging
-import tempfile
-import base64
+import subprocess
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Updater,
+    Application,
     CommandHandler,
-    MessageHandler,
-    Filters,
-    CallbackContext,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
 )
-import yt_dlp
-from functools import wraps
 
-# Bot configuration
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_IDS = [int(id.strip()) for id in os.getenv('ADMIN_IDS', '').split(',') if id.strip()]
-COOKIES_FILE = 'cookies.txt'
-
-# Initialize cookies from environment variable if available
-if os.getenv('COOKIES_BASE64'):
-    try:
-        with open(COOKIES_FILE, 'wb') as f:
-            f.write(base64.b64decode(os.getenv('COOKIES_BASE64')))
-        logging.info("Cookies initialized from environment variable")
-    except Exception as e:
-        logging.error(f"Failed to initialize cookies: {e}")
-
-# Set up logging
+# Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Helper functions
-def restricted_to_admins(func):
-    """Decorator to restrict access to admins only"""
-    @wraps(func)
-    def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
-        user_id = update.effective_user.id
-        if user_id not in ADMIN_IDS:
-            update.message.reply_text("⚠️ This command is restricted to admins only.")
-            return
-        return func(update, context, *args, **kwargs)
-    return wrapped
+# Configuration
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(','))) if os.getenv("ADMIN_IDS") else []
+OUTPUT_DIR = "downloads"
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB Telegram limit
 
-def get_video_resolutions(url: str) -> list:
-    """Get available video resolutions using yt-dlp"""
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
-    }
-    
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                return []
-            
-            formats = info.get('formats', [])
-            if not formats:
-                if info.get('url'):
-                    return [{'format_id': 'best', 'height': 'Best available'}]
-                return []
-            
-            resolutions = {}
-            for f in formats:
-                if f.get('height'):
-                    res = f['height']
-                    if res not in resolutions:
-                        resolutions[res] = f['format_id']
-            
-            available_res = [{'height': h, 'format_id': resolutions[h]} for h in sorted(resolutions.keys(), reverse=True)]
-            return available_res
-            
-        except Exception as e:
-            logger.error(f"Error getting resolutions: {e}")
-            return []
+# Conversation states
+SELECTING_ACTION, PROCESSING_URL, PROCESSING_FILE, SELECTING_QUALITY = range(4)
 
-def download_video(url: str, format_id: str = 'best') -> str:
-    """Download video using yt-dlp with specified format"""
-    temp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(temp_dir, '%(title)s.%(ext)s')
-    
-    ydl_opts = {
-        'format': format_id,
-        'outtmpl': output_path,
-        'quiet': True,
-        'no_warnings': True,
+def get_resolution_choices():
+    return {
+        "144": "144p",
+        "240": "240p",
+        "360": "360p",
+        "480": "480p",
+        "720": "720p (HD)",
+        "1080": "1080p (Full HD)",
+        "1440": "1440p (2K)",
+        "2160": "2160p (4K)",
+        "best": "Best available",
+        "audio": "Audio only"
     }
+
+def create_quality_keyboard():
+    choices = get_resolution_choices()
+    keyboard = []
+    keys = list(choices.keys())
+    for i in range(0, len(keys), 2):
+        row = []
+        if i < len(keys):
+            row.append(InlineKeyboardButton(choices[keys[i]], callback_data=keys[i]))
+        if i+1 < len(keys):
+            row.append(InlineKeyboardButton(choices[keys[i+1]], callback_data=keys[i+1]))
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Send welcome message and prompt for action selection."""
+    user = update.effective_user
+    if ADMIN_IDS and user.id not in ADMIN_IDS:
+        await update.message.reply_text("⚠️ Sorry, this bot is private.")
+        return ConversationHandler.END
+        
+    await update.message.reply_text(
+        f"Hi {user.first_name}! I can download videos for you.\n\n"
+        "Choose an option:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Single Video", callback_data="single")],
+            [InlineKeyboardButton("Multiple Videos (from file)", callback_data="multiple")],
+        ]),
+    )
+    return SELECTING_ACTION
+
+async def select_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle action selection."""
+    query = update.callback_query
+    await query.answer()
     
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
+    if query.data == "single":
+        await query.edit_message_text("Send me the video URL:")
+        return PROCESSING_URL
+    elif query.data == "multiple":
+        await query.edit_message_text("Upload a text file with URLs (one per line):")
+        return PROCESSING_FILE
+
+async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process single URL input."""
+    url = update.message.text.strip()
+    if not url.startswith(('http://', 'https://')):
+        await update.message.reply_text("Please provide a valid URL starting with http:// or https://")
+        return PROCESSING_URL
+    
+    context.user_data['url'] = url
+    await update.message.reply_text(
+        "Select video quality:",
+        reply_markup=create_quality_keyboard()
+    )
+    return SELECTING_QUALITY
+
+async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process uploaded file with URLs."""
+    if not update.message.document:
+        await update.message.reply_text("Please upload a text file.")
+        return PROCESSING_FILE
+    
+    file = await context.bot.get_file(update.message.document)
+    file_path = os.path.join(OUTPUT_DIR, f"urls_{update.effective_user.id}.txt")
+    await file.download_to_drive(file_path)
     
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            downloaded_file = ydl.prepare_filename(info)
-            return downloaded_file
+        with open(file_path, 'r') as f:
+            urls = [line.strip() for line in f if line.strip()]
     except Exception as e:
-        logger.error(f"Error downloading video: {e}")
-        raise
-
-# Command handlers
-def start(update: Update, context: CallbackContext) -> None:
-    """Send a message when the command /start is issued."""
-    update.message.reply_text(
-        "👋 Hi! Send me a link to a video from supported social media platforms "
-        "(YouTube, Instagram, Twitter, TikTok, etc.) and I'll download it for you."
+        await update.message.reply_text(f"Error reading file: {e}")
+        return ConversationHandler.END
+    
+    if not urls:
+        await update.message.reply_text("No valid URLs found in the file.")
+        return ConversationHandler.END
+    
+    context.user_data['urls'] = urls
+    await update.message.reply_text(
+        f"Found {len(urls)} URLs. Select quality for all downloads:",
+        reply_markup=create_quality_keyboard()
     )
+    return SELECTING_QUALITY
 
-def help_command(update: Update, context: CallbackContext) -> None:
-    """Send a message when the command /help is issued."""
-    update.message.reply_text(
-        "📝 How to use this bot:\n\n"
-        "1. Send me a link to a video from supported platforms\n"
-        "2. I'll show you available resolutions (if any)\n"
-        "3. Select your preferred quality\n"
-        "4. I'll download and send you the video\n\n"
-        "Supported platforms include: YouTube, Instagram, Twitter, TikTok, Facebook, and many more."
-    )
-
-@restricted_to_admins
-def admin_help(update: Update, context: CallbackContext) -> None:
-    """Send admin help message"""
-    update.message.reply_text(
-        "🛠 Admin Commands:\n\n"
-        "/upload_cookies - Upload cookies.txt file\n"
-        "/delete_cookies - Delete current cookies file\n"
-        "/cookies_status - Check if cookies file exists\n\n"
-        "Note: Cookies help with age-restricted or private content."
-    )
-
-@restricted_to_admins
-def upload_cookies(update: Update, context: CallbackContext) -> None:
-    """Handle cookies file upload"""
-    if not update.message.document:
-        update.message.reply_text("Please upload the cookies.txt file as a document.")
-        return
-    
-    file = context.bot.get_file(update.message.document.file_id)
-    file.download(COOKIES_FILE)
-    update.message.reply_text("✅ Cookies file uploaded successfully.")
-
-@restricted_to_admins
-def delete_cookies(update: Update, context: CallbackContext) -> None:
-    """Delete cookies file"""
-    if os.path.exists(COOKIES_FILE):
-        os.remove(COOKIES_FILE)
-        update.message.reply_text("✅ Cookies file deleted successfully.")
-    else:
-        update.message.reply_text("No cookies file exists.")
-
-@restricted_to_admins
-def cookies_status(update: Update, context: CallbackContext) -> None:
-    """Check cookies file status"""
-    if os.path.exists(COOKIES_FILE):
-        file_size = os.path.getsize(COOKIES_FILE)
-        update.message.reply_text(f"✅ Cookies file exists ({file_size} bytes).")
-    else:
-        update.message.reply_text("❌ No cookies file found.")
-
-def handle_video_url(update: Update, context: CallbackContext) -> None:
-    """Handle video URL message"""
-    url = update.message.text
-    
-    if not (url.startswith('http://') or url.startswith('https://')):
-        update.message.reply_text("Please send a valid URL starting with http:// or https://")
-        return
-    
-    update.message.reply_text("🔍 Checking available resolutions...")
-    
-    resolutions = get_video_resolutions(url)
-    if not resolutions:
-        update.message.reply_text("⚠️ Could not get video information. The link might be invalid or the site might not be supported.")
-        return
-    
-    keyboard = []
-    for res in resolutions:
-        height = res['height']
-        format_id = res['format_id']
-        if height == 'Best available':
-            text = "⬇️ Download (Best Quality)"
-        else:
-            text = f"⬇️ Download ({height}p)"
-        keyboard.append([InlineKeyboardButton(text, callback_data=f"download_{format_id}_{url}")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("📊 Available resolutions:", reply_markup=reply_markup)
-
-def button_callback(update: Update, context: CallbackContext) -> None:
-    """Handle button callbacks"""
+async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the download process."""
     query = update.callback_query
-    query.answer()
+    await query.answer()
     
-    if query.data.startswith('download_'):
-        _, format_id, url = query.data.split('_', 2)
-        url = url.replace('_', '/')
+    quality = query.data
+    context.user_data['quality'] = quality
+    
+    if 'url' in context.user_data:
+        # Single download
+        url = context.user_data['url']
+        await query.edit_message_text(f"⏳ Downloading at {get_resolution_choices()[quality]} quality...")
+        success = await perform_download(url, quality, update, context)
         
-        query.edit_message_text(text=f"⏳ Downloading video (format: {format_id})...")
-        
-        try:
-            video_path = download_video(url, format_id)
+        if success:
+            await query.edit_message_text("✅ Download completed!")
+        else:
+            await query.edit_message_text("❌ Download failed. Please try again.")
             
-            with open(video_path, 'rb') as video_file:
-                context.bot.send_video(
-                    chat_id=query.message.chat_id,
-                    video=video_file,
-                    caption="Here's your downloaded video!",
-                    supports_streaming=True
+    elif 'urls' in context.user_data:
+        # Multiple downloads
+        urls = context.user_data['urls']
+        await query.edit_message_text(f"⏳ Starting {len(urls)} downloads...")
+        
+        for i, url in enumerate(urls, 1):
+            message = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"Downloading {i}/{len(urls)}..."
+            )
+            success = await perform_download(url, quality, update, context, message)
+            
+            if not success:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"❌ Failed to download: {url}"
                 )
-            
-            os.remove(video_path)
-            os.rmdir(os.path.dirname(video_path))
-            
-        except Exception as e:
-            logger.error(f"Error in download: {e}")
-            query.edit_message_text(text="❌ Failed to download the video. Please try again later.")
-
-def error_handler(update: Update, context: CallbackContext) -> None:
-    """Log errors"""
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+        
+        await query.edit_message_text(f"✅ Completed {len(urls)} downloads!")
     
-    if update and update.effective_message:
-        update.effective_message.reply_text(
-            "⚠️ An error occurred while processing your request. Please try again later."
+    return ConversationHandler.END
+
+async def perform_download(url: str, quality: str, update: Update, context: ContextTypes.DEFAULT_TYPE, message=None) -> bool:
+    """Perform the actual download using yt-dlp."""
+    try:
+        Path(OUTPUT_DIR).mkdir(exist_ok=True)
+        
+        # Base command with cookies if available
+        base_cmd = ["yt-dlp"]
+        if os.getenv("COOKIES_BASE64"):
+            cookies_path = os.path.join(OUTPUT_DIR, "cookies.txt")
+            with open(cookies_path, 'wb') as f:
+                import base64
+                f.write(base64.b64decode(os.getenv("COOKIES_BASE64")))
+            base_cmd.extend(["--cookies", cookies_path])
+        
+        if quality == "audio":
+            cmd = base_cmd + [
+                "-x",
+                "--audio-format", "mp3",
+                "--audio-quality", "0",
+                "-o", f"{OUTPUT_DIR}/%(title)s.%(ext)s",
+                url
+            ]
+        elif quality == "best":
+            cmd = base_cmd + [
+                "-f", "bestvideo+bestaudio",
+                "--merge-output-format", "mp4",
+                "-o", f"{OUTPUT_DIR}/%(title)s.%(ext)s",
+                url
+            ]
+        else:
+            cmd = base_cmd + [
+                "-f", f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]",
+                "--merge-output-format", "mp4",
+                "-o", f"{OUTPUT_DIR}/%(title)s.%(ext)s",
+                url
+            ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
+        
+        before = set(os.listdir(OUTPUT_DIR))
+        await process.communicate()
+        after = set(os.listdir(OUTPUT_DIR))
+        new_files = after - before
+        
+        if process.returncode == 0 and new_files:
+            downloaded_file = new_files.pop()
+            file_path = os.path.join(OUTPUT_DIR, downloaded_file)
+            
+            file_size = os.path.getsize(file_path)
+            if file_size > MAX_FILE_SIZE:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"⚠️ File too large for Telegram ({file_size/1024/1024:.1f}MB). "
+                         "Use /start to download smaller versions."
+                )
+                return True
+            
+            try:
+                if message:
+                    await message.delete()
+                
+                with open(file_path, 'rb') as f:
+                    if quality == "audio":
+                        await context.bot.send_audio(
+                            chat_id=update.effective_chat.id,
+                            audio=f,
+                            title=downloaded_file
+                        )
+                    else:
+                        await context.bot.send_video(
+                            chat_id=update.effective_chat.id,
+                            video=f,
+                            supports_streaming=True
+                        )
+                return True
+            except Exception as e:
+                logger.error(f"Error sending file: {e}")
+                return True
+        else:
+            logger.error(f"Download failed for {url}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error in download process: {e}")
+        return False
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel and end the conversation."""
+    await update.message.reply_text("Operation cancelled.")
+    return ConversationHandler.END
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log errors and send a message to the user."""
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    if update.effective_message:
+        await update.effective_message.reply_text("⚠️ An error occurred. Please try again.")
 
 def main() -> None:
-    """Start the bot."""
-    updater = Updater(BOT_TOKEN)
-    dispatcher = updater.dispatcher
-
-    # Register command handlers
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", help_command))
-    dispatcher.add_handler(CommandHandler("admin", admin_help))
-    dispatcher.add_handler(CommandHandler("upload_cookies", upload_cookies))
-    dispatcher.add_handler(CommandHandler("delete_cookies", delete_cookies))
-    dispatcher.add_handler(CommandHandler("cookies_status", cookies_status))
-
-    # Register message handlers
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_video_url))
+    """Run the bot."""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable not set!")
+        return
     
-    # Register callback query handler
-    dispatcher.add_handler(CallbackQueryHandler(button_callback))
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            SELECTING_ACTION: [CallbackQueryHandler(select_action)],
+            PROCESSING_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_url)],
+            PROCESSING_FILE: [MessageHandler(filters.Document.TXT, process_file)],
+            SELECTING_QUALITY: [CallbackQueryHandler(download_media)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    application.add_handler(conv_handler)
+    application.add_error_handler(error_handler)
+    
+    logger.info("Bot is running...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    # Register error handler
-    dispatcher.add_error_handler(error_handler)
-
-    # Start the Bot
-    updater.start_polling()
-    logger.info("Bot started and polling...")
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
