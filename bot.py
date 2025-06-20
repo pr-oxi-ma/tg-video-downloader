@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import asyncio
 import logging
 import os
@@ -73,19 +72,6 @@ def has_cookies() -> bool:
     """Check if cookies file exists and is not empty"""
     return Path(COOKIES_FILE).exists() and os.path.getsize(COOKIES_FILE) > 0
 
-def verify_cookies():
-    """Verify cookies file contains YouTube domain and hasn't been corrupted"""
-    if not has_cookies():
-        return False
-    
-    try:
-        with open(COOKIES_FILE, 'r') as f:
-            content = f.read()
-            # More flexible verification
-            return 'youtube.com' in content and content.strip().startswith('#')
-    except:
-        return False
-
 def get_formats(url: str):
     """Extract available formats using yt-dlp."""
     ydl_opts = {
@@ -109,8 +95,6 @@ def download_format(url: str, fmt: str, out_path: Path):
         "format": f"{fmt}+bestaudio/best",
         "merge_output_format": "mp4",
         "cookiefile": COOKIES_FILE if has_cookies() else None,
-        "cookiesfrombrowser": None,  # Disable any automatic cookie handling
-        "no_cookies": False,        # Ensure cookies are used if provided
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -143,8 +127,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 *Admin Commands*\n\n"
         "*/upload_cookies* - Upload cookies.txt file\n"
         "*/remove_cookies* - Remove existing cookies\n"
-        "*/cookies_status* - Check cookies status\n"
-        "*/view_cookies* - View first few lines of cookies (debug)\n\n"
+        "*/cookies_status* - Check cookies status\n\n"
         "🔒 *These commands are only available to admins*"
     )
     await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
@@ -186,38 +169,12 @@ async def cookies_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if has_cookies():
-        status = "✅ Valid" if verify_cookies() else "⚠️ Invalid/Corrupted"
         await update.message.reply_text(
-            f"{status} cookies are enabled\n"
-            f"📏 Size: {os.path.getsize(COOKIES_FILE)} bytes\n"
-            f"🔍 Contains YouTube cookies: {'yes' if verify_cookies() else 'no'}",
+            f"✅ Cookies are enabled\n📏 Size: {os.path.getsize(COOKIES_FILE)} bytes",
             parse_mode=constants.ParseMode.MARKDOWN
         )
     else:
         await update.message.reply_text("❌ Cookies are disabled")
-
-async def view_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View first few lines of cookies (admin only)"""
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text(random.choice(FUNNY_RESPONSES), parse_mode=constants.ParseMode.MARKDOWN)
-        return
-
-    if not has_cookies():
-        await update.message.reply_text("❌ No cookies file exists")
-        return
-
-    try:
-        with open(COOKIES_FILE, 'r') as f:
-            lines = [f.readline() for _ in range(5)]
-            await update.message.reply_text(
-                "📝 First 5 lines of cookies:\n```\n" + 
-                "".join(lines) + 
-                "\n```",
-                parse_mode=constants.ParseMode.MARKDOWN_V2
-            )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error reading cookies: {str(e)}")
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle when a document is sent (for cookies.txt)"""
@@ -233,20 +190,9 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Create a temporary file first
-        temp_cookies = Path(tempfile.mktemp())
+        # Download the file directly to the persistent location
         file = await document.get_file()
-        await file.download_to_drive(temp_cookies)
-        
-        # Verify the cookies file contains YouTube domain
-        with open(temp_cookies, 'r') as f:
-            content = f.read()
-            # More flexible verification
-            if 'youtube.com' not in content or not content.strip().startswith('#'):
-                raise ValueError("Uploaded cookies.txt doesn't contain valid YouTube cookies")
-        
-        # If verification passes, move to permanent location
-        shutil.move(temp_cookies, COOKIES_FILE)
+        await file.download_to_drive(COOKIES_FILE)
         await message.reply_text(
             "✅ Cookies file saved successfully!\n"
             "It will be used for all YouTube downloads.",
@@ -254,8 +200,6 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await message.reply_text(f"❌ Error saving cookies: {str(e)}")
-        if 'temp_cookies' in locals() and temp_cookies.exists():
-            temp_cookies.unlink()
 
 async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -263,15 +207,6 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not url.lower().startswith(("http://", "https://")):
         await message.reply_text("❌ Please send a valid URL starting with http:// or https://")
-        return
-
-    # Check cookies integrity if they exist
-    if has_cookies() and not verify_cookies():
-        await message.reply_text(
-            "⚠️ Cookies file appears corrupted. Please upload a fresh cookies.txt file.\n"
-            "Use /upload_cookies to upload a new one.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
         return
 
     msg = await message.reply_text("🔍 Analyzing video...")
@@ -326,15 +261,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ Expired. Send the link again.")
         return
 
-    # Check cookies integrity before download
-    if has_cookies() and not verify_cookies():
-        await query.edit_message_text(
-            "⚠️ Cookies file appears corrupted. Please upload a fresh cookies.txt file.\n"
-            "Use /upload_cookies to upload a new one.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
-        return
-
     temp_dir = Path(tempfile.mkdtemp(prefix="dl_"))
     temp_base = temp_dir / "video"
 
@@ -344,24 +270,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = await asyncio.to_thread(download_format, url, fmt_id, temp_base)
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        
-        # Special handling for YouTube authentication errors
-        if "Sign in to confirm you're not a bot" in str(e):
-            error_msg = (
-                "🔒 *Authentication Required*\n\n"
-                "The cookies file either:\n"
-                "1. Doesn't contain valid YouTube cookies\n"
-                "2. Has expired\n"
-                "3. Wasn't properly exported\n\n"
-                "Please upload a fresh cookies.txt file using /upload_cookies\n\n"
-                "ℹ️ Make sure you:\n"
-                "- Are logged into YouTube when exporting cookies\n"
-                "- Export cookies for youtube.com domain\n"
-                "- Use Netscape format cookies"
-            )
-            await query.edit_message_text(error_msg, parse_mode=constants.ParseMode.MARKDOWN)
-        else:
-            await query.edit_message_text(f"❌ Download failed: `{str(e)}`", parse_mode="Markdown")
+        await query.edit_message_text(f"❌ Download failed: `{str(e)}`", parse_mode="Markdown")
         return
 
     if file_path.stat().st_size > TELEGRAM_FILE_LIMIT:
@@ -371,24 +280,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("📤 Uploading to Telegram...")
     try:
-        # Add timeout handling for the upload
-        await asyncio.wait_for(
-            query.message.reply_video(
-                video=file_path.open("rb"),
-                supports_streaming=True,
-                read_timeout=60,
-                write_timeout=60,
-                connect_timeout=60
-            ),
-            timeout=300
-        )
-        await query.delete_message()
-    except asyncio.TimeoutError:
-        await query.edit_message_text("⌛ Upload timed out. Please try again with a lower resolution.")
+        await query.message.reply_video(video=file_path.open("rb"))
     except Exception as e:
         await query.edit_message_text(f"❌ Upload failed: `{str(e)}`", parse_mode="Markdown")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        await query.delete_message()
 
 def main():
     if not BOT_TOKEN:
@@ -410,7 +307,6 @@ def main():
     bot_app.add_handler(CommandHandler("upload_cookies", upload_cookies))
     bot_app.add_handler(CommandHandler("remove_cookies", remove_cookies))
     bot_app.add_handler(CommandHandler("cookies_status", cookies_status))
-    bot_app.add_handler(CommandHandler("view_cookies", view_cookies))
     
     # Message handlers
     bot_app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
